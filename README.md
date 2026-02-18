@@ -1,54 +1,49 @@
-# Lava Lamp Interior (WebGL + Vite + TypeScript)
+#  Lava Lamp Visual
 
-A fullscreen, dark, hypnotic lava-lamp-style interior using a fragment shader with metaballs, domain warping, soft glow, and internal shading.
+🌐 Live demo:  
+ https://sequeradev.github.io/lava_lamp/
 
-## Local run
+---
 
-```bash
-npm install
-npm run dev
-```
+## 🛠 Tech
 
-Then open the local URL shown by Vite.
+- Vite + TypeScript
+- WebGL (GLSL shaders)
+- GitHub Pages auto-deploy
 
-## Build
+---
 
-```bash
-npm run build
-npm run preview
-```
+## 🎨 Customization
 
-## Customization knobs
+You can easily modify the lava appearance in the fragment shader.
 
-Edit `src/main.ts` in the `config` object:
+### Change lava color
 
-- `blobCount`: Number of big blobs (`6` to `12` works best).
-- `speed`: Overall motion speed (smaller = slower/more relaxing).
-- `blobRadiusMin` / `blobRadiusMax`: Blob size range.
-- `threshold`: Merge/split behavior (higher usually means tighter lava regions).
-- `glowStrength`: Edge glow intensity.
-- `orangeColorA` / `orangeColorB`: Lava color gradient.
-- `backgroundColor`: Near-black background tone.
+Open:
 
-## GitHub Pages deployment
+src/main.ts
 
-1. `vite.config.ts` reads `VITE_BASE_PATH` and automatically normalizes to `/<REPO_NAME>/` when provided.
-2. `.github/workflows/deploy.yml` sets:
+css
+Copiar código
 
-```yaml
-VITE_BASE_PATH: ${{ github.event.repository.name }}
-```
+Find the color definition (similar to):
 
-So no manual repo-name edits are required for CI deploy.
+```glsl
+vec3 lavaColor = vec3(1.0, 0.45, 0.05);
+Examples:
 
-3. Commit and push to `main`.
-4. In GitHub repo settings:
-   - Go to **Settings -> Pages**.
-   - Set **Source** to **GitHub Actions**.
-5. The workflow at `.github/workflows/deploy.yml` builds and deploys `dist` automatically on push to `main`.
+🔥 Deep orange
 
-## Notes
+glsl
+Copiar código
+vec3 lavaColor = vec3(1.0, 0.35, 0.05);
+💜 Purple lava
 
-- Uses plain WebGL (no heavy graphics libraries).
-- Handles resize and device pixel ratio (DPR is capped to 2 for stable performance).
-- Animation runs continuously with `requestAnimationFrame`.
+glsl
+Copiar código
+vec3 lavaColor = vec3(0.7, 0.2, 1.0);
+💚 Neon green
+
+glsl
+Copiar código
+vec3 lavaColor = vec3(0.2, 1.0, 0.4);
