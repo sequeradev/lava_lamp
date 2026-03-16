@@ -12,8 +12,13 @@ body {
   background: #050508;
 }
 
+#app {
+  position: relative;
+}
+
 canvas {
   display: block;
   width: 100vw;
   height: 100vh;
+  touch-action: none;
 }

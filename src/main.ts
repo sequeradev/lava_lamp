@@ -1,12 +1,44 @@
 import './style.css';
 
 type QualityLevel = 1 | 2 | 3;
+type Vec3 = [number, number, number];
 
 const QUALITY: QualityLevel = 2;
-const BASE_ORANGE = '#ff7a24';
 const CORE_EMISSION = 0.26;
 const EDGE_GLOW_INTENSITY = 1.42;
 const EDGE_GLOW_RADIUS = 1.25;
+const COLOR_CHANGE_INTERVAL_MS = 60_000;
+
+function reportFatalError(message: string): void {
+  let errorNode = document.querySelector<HTMLPreElement>('[data-fatal-error]');
+  if (!errorNode) {
+    errorNode = document.createElement('pre');
+    errorNode.dataset.fatalError = 'true';
+    errorNode.style.position = 'fixed';
+    errorNode.style.inset = '1rem';
+    errorNode.style.margin = '0';
+    errorNode.style.padding = '1rem';
+    errorNode.style.background = 'rgba(20, 2, 2, 0.92)';
+    errorNode.style.color = '#ffd7d7';
+    errorNode.style.border = '1px solid rgba(255, 120, 120, 0.45)';
+    errorNode.style.borderRadius = '12px';
+    errorNode.style.font = "12px/1.4 Consolas, 'Courier New', monospace";
+    errorNode.style.whiteSpace = 'pre-wrap';
+    errorNode.style.zIndex = '9999';
+    document.body.appendChild(errorNode);
+  }
+
+  errorNode.textContent = `Runtime error\n${message}`;
+}
+
+window.addEventListener('error', (event) => {
+  reportFatalError(event.error instanceof Error ? event.error.stack ?? event.error.message : event.message);
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason instanceof Error ? event.reason.stack ?? event.reason.message : String(event.reason);
+  reportFatalError(reason);
+});
 
 type LavaConfig = {
   blobCount: number;
@@ -23,9 +55,34 @@ type LavaConfig = {
   coreEmission: number;
   edgeGlowIntensity: number;
   edgeGlowRadius: number;
-  orangeColorA: string;
-  orangeColorB: string;
+  lavaColorA: string;
+  lavaColorB: string;
   backgroundColor: string;
+};
+
+type LavaPalette = {
+  colorA: Vec3;
+  colorB: Vec3;
+};
+
+type PointerInteractionConfig = {
+  influenceRadius: number;
+  pushStrength: number;
+  pointerDrag: number;
+  spring: number;
+  damping: number;
+  maxOffset: number;
+};
+
+type PointerState = {
+  active: boolean;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  lastX: number;
+  lastY: number;
+  lastTime: number;
 };
 
 type QualityPreset = {
@@ -79,13 +136,39 @@ const config: LavaConfig = {
   coreEmission: CORE_EMISSION,
   edgeGlowIntensity: EDGE_GLOW_INTENSITY,
   edgeGlowRadius: EDGE_GLOW_RADIUS,
-  orangeColorA: BASE_ORANGE,
-  orangeColorB: '#eb4a16',
+  lavaColorA: '#ff5a1f',
+  lavaColorB: '#ffb347',
   backgroundColor: '#050508',
 };
 
 const quality = QUALITY_PRESETS[QUALITY];
 const MAX_BLOBS = 12;
+const POINTER_INTERACTION: PointerInteractionConfig = {
+  influenceRadius: 0.34,
+  pushStrength: 0.3,
+  pointerDrag: 0.045,
+  spring: 5.8,
+  damping: 4.6,
+  maxOffset: 0.08,
+};
+const PRIMARY_PALETTES: LavaPalette[] = [
+  {
+    colorA: hexToVec3('#ff3b1f'),
+    colorB: hexToVec3('#ff9a1f'),
+  },
+  {
+    colorA: hexToVec3('#ff7a18'),
+    colorB: hexToVec3('#ffd347'),
+  },
+  {
+    colorA: hexToVec3('#2f6bff'),
+    colorB: hexToVec3('#8b2cff'),
+  },
+  {
+    colorA: hexToVec3('#ff2d55'),
+    colorB: hexToVec3('#ff6a00'),
+  },
+];
 
 const vertexSource = `
 attribute vec2 a_position;
@@ -121,8 +204,8 @@ uniform float u_glowFalloff;
 uniform float u_coreEmission;
 uniform float u_edgeGlowIntensity;
 uniform float u_edgeGlowRadius;
-uniform vec3 u_orangeA;
-uniform vec3 u_orangeB;
+uniform vec3 u_lavaColorA;
+uniform vec3 u_lavaColorB;
 uniform vec3 u_background;
 
 float hash(vec2 p) {
@@ -158,11 +241,16 @@ float fbm(vec2 p) {
 }
 
 float fieldAt(vec2 p) {
+  float morphPulse = 0.5 + 0.5 * sin(u_time * 1.15);
   vec2 warp = vec2(
     fbm(p * 0.82 + vec2(0.0, u_time * 0.024)),
     fbm(p * 0.82 + vec2(4.6, -u_time * 0.021))
   );
-  vec2 warped = p + (warp - 0.5) * u_warpStrength;
+  vec2 jelly = vec2(
+    sin((p.y + u_time * 0.08) * 7.2),
+    cos((p.x - u_time * 0.07) * 6.6)
+  ) * 0.008;
+  vec2 warped = p + (warp - 0.5) * u_warpStrength * (0.95 + morphPulse * 0.08) + jelly;
 
   float field = 0.0;
   for (int i = 0; i < MAX_BLOBS; i++) {
@@ -172,7 +260,7 @@ float fieldAt(vec2 p) {
 
     vec2 center = vec2(u_blobCenters[i].x * u_aspect, u_blobCenters[i].y);
     vec2 delta = warped - center;
-    float radius = u_blobRadii[i];
+    float radius = u_blobRadii[i] * (0.98 + morphPulse * 0.04);
     field += (radius * radius) / (dot(delta, delta) + 0.03);
   }
 
@@ -212,22 +300,23 @@ void main() {
 
   float innerNoise = fbm(p * 1.55 + vec2(u_time * 0.017, -u_time * 0.014));
   float toneMix = clamp(0.16 + innerNoise * 0.86 + thickness * 0.22, 0.0, 1.0);
-  vec3 waxBase = mix(u_orangeA, u_orangeB, toneMix);
+  vec3 waxBase = mix(u_lavaColorA, u_lavaColorB, toneMix);
+  vec3 brightTint = mix(waxBase, vec3(1.0, 0.92, 0.72), 0.16);
+  vec3 shadowTint = mix(mix(u_lavaColorA, u_lavaColorB, 0.18), u_background, 0.46);
 
   float absorb = exp(-thickness * u_absorption);
   float core = smoothstep(0.1, 0.95, inside * u_coreShadow);
   float coreDarkening = mix(1.0, 0.58, core);
 
   vec3 wax = waxBase * (0.36 + diffuse * 0.66) * absorb * coreDarkening;
-  wax += waxBase * backScatter * u_translucency * vec3(1.16, 0.88, 0.56);
-  wax += mix(u_orangeA, u_orangeB, 0.25) * thickness * thickness * u_translucency * 0.6;
-  wax += specular * vec3(1.0, 0.78, 0.5) * 0.13;
-  wax += fresnel * vec3(0.18, 0.07, 0.02) * 0.22;
+  wax += waxBase * backScatter * u_translucency * mix(brightTint, vec3(1.0, 0.82, 0.56), 0.18);
+  wax += mix(u_lavaColorA, u_lavaColorB, 0.25) * thickness * thickness * u_translucency * 0.7;
+  wax += specular * brightTint * 0.19;
+  wax += fresnel * shadowTint * 0.22;
 
-  // Temperature ramp: hotter core shifts toward bright yellow-orange.
-  vec3 edgeColor = vec3(0.88, 0.22, 0.08);
-  vec3 midColor = mix(u_orangeA, u_orangeB, 0.35);
-  vec3 coreColor = vec3(1.0, 0.47, 0.15);
+  vec3 edgeColor = mix(u_lavaColorA, shadowTint, 0.22);
+  vec3 midColor = mix(u_lavaColorA, u_lavaColorB, 0.35);
+  vec3 coreColor = mix(u_lavaColorB, vec3(1.0, 0.78, 0.4), 0.12);
   float heat = clamp(thickness * 0.75 + core * 0.6 + smoothstep(0.0, 2.0, field - u_threshold) * 0.3, 0.0, 1.0);
   vec3 heatGradient = mix(edgeColor, midColor, smoothstep(0.02, 0.55, heat));
   heatGradient = mix(heatGradient, coreColor, smoothstep(0.52, 1.0, heat));
@@ -236,8 +325,8 @@ void main() {
   float fieldBoost = smoothstep(0.0, 2.4, field - u_threshold);
   float coreEmissionMask = pow(clamp(heat, 0.0, 1.0), 1.35);
   vec3 emission = heatGradient * (0.22 + thickness * 0.95 + fieldBoost * 0.35) * coreEmissionMask;
-  emission *= u_coreEmission;
-  emission = min(emission, vec3(0.28, 0.16, 0.07));
+  emission *= u_coreEmission * 1.2;
+  emission = min(emission, vec3(0.42, 0.33, 0.28));
   wax += emission;
 
   float edgeDistance = abs(signedToSurface);
@@ -245,9 +334,9 @@ void main() {
   float edgeBand = exp(-edgeDistance * (glowFalloff * 0.52));
   float outerHalo = exp(-edgeDistance * (glowFalloff * 0.2));
   float curvature = clamp(gradLen * 0.22, 0.0, 1.0);
-  vec3 glowColor = mix(midColor, coreColor, 0.4);
+  vec3 glowColor = mix(midColor, brightTint, 0.52);
   vec3 glow = glowColor * (edgeBand * (0.38 + curvature * 0.62) + outerHalo * 0.24);
-  glow *= u_glowStrength * u_edgeGlowIntensity;
+  glow *= u_glowStrength * u_edgeGlowIntensity * 1.18;
 
   float vignette = smoothstep(1.55, 0.25, length(p));
   vec3 background = u_background + vec3(0.012, 0.006, 0.002) * vignette;
@@ -290,6 +379,14 @@ if (!glContext) {
 }
 
 const gl = glContext;
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function lerp(from: number, to: number, amount: number): number {
+  return from + (to - from) * amount;
+}
 
 function compileShader(type: number, source: string): WebGLShader {
   const shader = gl.createShader(type);
@@ -335,11 +432,17 @@ function createProgram(vertex: string, fragment: string): WebGLProgram {
 }
 
 function getUniformLocation(program: WebGLProgram, name: string): WebGLUniformLocation {
-  const location = gl.getUniformLocation(program, name);
-  if (!location) {
-    throw new Error(`Uniform not found: ${name}`);
+  const directLocation = gl.getUniformLocation(program, name);
+  if (directLocation) {
+    return directLocation;
   }
-  return location;
+
+  const arrayLocation = gl.getUniformLocation(program, `${name}[0]`);
+  if (arrayLocation) {
+    return arrayLocation;
+  }
+
+  throw new Error(`Uniform not found: ${name}`);
 }
 
 function hexToVec3(hex: string): [number, number, number] {
@@ -354,6 +457,72 @@ function hexToVec3(hex: string): [number, number, number] {
     ((value >> 8) & 255) / 255,
     (value & 255) / 255,
   ];
+}
+
+function mixVec3(from: Vec3, to: Vec3, amount: number): Vec3 {
+  return [
+    lerp(from[0], to[0], amount),
+    lerp(from[1], to[1], amount),
+    lerp(from[2], to[2], amount),
+  ];
+}
+
+function smoothstep01(value: number): number {
+  const clamped = clamp01(value);
+  return clamped * clamped * (3 - 2 * clamped);
+}
+
+function getLavaPalette(elapsedMs: number): LavaPalette {
+  const safeElapsedMs = Math.max(0, elapsedMs);
+  const cycle = safeElapsedMs / COLOR_CHANGE_INTERVAL_MS;
+  const paletteCount = PRIMARY_PALETTES.length;
+  const currentIndex = ((Math.floor(cycle) % paletteCount) + paletteCount) % paletteCount;
+  const nextIndex = (currentIndex + 1) % PRIMARY_PALETTES.length;
+  const mixAmount = smoothstep01(cycle - Math.floor(cycle));
+  const currentPalette = PRIMARY_PALETTES[currentIndex];
+  const nextPalette = PRIMARY_PALETTES[nextIndex];
+
+  return {
+    colorA: mixVec3(currentPalette.colorA, nextPalette.colorA, mixAmount),
+    colorB: mixVec3(currentPalette.colorB, nextPalette.colorB, mixAmount),
+  };
+}
+
+const pointerState: PointerState = {
+  active: false,
+  x: 0,
+  y: 0,
+  vx: 0,
+  vy: 0,
+  lastX: 0,
+  lastY: 0,
+  lastTime: 0,
+};
+
+function updatePointerState(clientX: number, clientY: number): void {
+  const now = performance.now();
+  const nextX = (clientX / window.innerWidth) * 2 - 1;
+  const nextY = 1 - (clientY / window.innerHeight) * 2;
+
+  if (pointerState.lastTime > 0) {
+    const deltaSeconds = Math.max((now - pointerState.lastTime) / 1000, 1 / 240);
+    const velocityX = (nextX - pointerState.lastX) / deltaSeconds;
+    const velocityY = (nextY - pointerState.lastY) / deltaSeconds;
+
+    pointerState.vx = lerp(pointerState.vx, velocityX, 0.22);
+    pointerState.vy = lerp(pointerState.vy, velocityY, 0.22);
+  }
+
+  pointerState.active = true;
+  pointerState.x = nextX;
+  pointerState.y = nextY;
+  pointerState.lastX = nextX;
+  pointerState.lastY = nextY;
+  pointerState.lastTime = now;
+}
+
+function releasePointerState(): void {
+  pointerState.active = false;
 }
 
 const program = createProgram(vertexSource, fragmentSource);
@@ -384,8 +553,8 @@ const glowFalloffLocation = getUniformLocation(program, 'u_glowFalloff');
 const coreEmissionLocation = getUniformLocation(program, 'u_coreEmission');
 const edgeGlowIntensityLocation = getUniformLocation(program, 'u_edgeGlowIntensity');
 const edgeGlowRadiusLocation = getUniformLocation(program, 'u_edgeGlowRadius');
-const orangeALocation = getUniformLocation(program, 'u_orangeA');
-const orangeBLocation = getUniformLocation(program, 'u_orangeB');
+const lavaColorALocation = getUniformLocation(program, 'u_lavaColorA');
+const lavaColorBLocation = getUniformLocation(program, 'u_lavaColorB');
 const backgroundLocation = getUniformLocation(program, 'u_background');
 
 const quad = gl.createBuffer();
@@ -421,8 +590,8 @@ gl.uniform1f(glowFalloffLocation, quality.glowFalloff);
 gl.uniform1f(coreEmissionLocation, config.coreEmission);
 gl.uniform1f(edgeGlowIntensityLocation, config.edgeGlowIntensity);
 gl.uniform1f(edgeGlowRadiusLocation, config.edgeGlowRadius);
-gl.uniform3fv(orangeALocation, hexToVec3(config.orangeColorA));
-gl.uniform3fv(orangeBLocation, hexToVec3(config.orangeColorB));
+gl.uniform3fv(lavaColorALocation, hexToVec3(config.lavaColorA));
+gl.uniform3fv(lavaColorBLocation, hexToVec3(config.lavaColorB));
 gl.uniform3fv(backgroundLocation, hexToVec3(config.backgroundColor));
 
 const centers = new Float32Array(MAX_BLOBS * 2);
@@ -431,6 +600,10 @@ const phases = new Float32Array(MAX_BLOBS);
 const xFreqs = new Float32Array(MAX_BLOBS);
 const yFreqs = new Float32Array(MAX_BLOBS);
 const radiusFreqs = new Float32Array(MAX_BLOBS);
+const offsetXs = new Float32Array(MAX_BLOBS);
+const offsetYs = new Float32Array(MAX_BLOBS);
+const velocityXs = new Float32Array(MAX_BLOBS);
+const velocityYs = new Float32Array(MAX_BLOBS);
 
 for (let i = 0; i < MAX_BLOBS; i += 1) {
   const seed = i + 1;
@@ -466,10 +639,28 @@ function resize(): void {
 window.addEventListener('resize', resize);
 resize();
 
+window.addEventListener('pointermove', (event) => {
+  updatePointerState(event.clientX, event.clientY);
+});
+
+window.addEventListener('pointerdown', (event) => {
+  updatePointerState(event.clientX, event.clientY);
+});
+
+window.addEventListener('pointerleave', releasePointerState);
+window.addEventListener('pointercancel', releasePointerState);
+window.addEventListener('blur', releasePointerState);
+
 const start = performance.now();
+let lastFrame = start;
 
 function tick(now: number): void {
-  const t = ((now - start) * 0.001) * config.speed;
+  const elapsedMs = Math.max(0, now - start);
+  const deltaSeconds = Math.min((now - lastFrame) / 1000, 1 / 20);
+  lastFrame = now;
+  const t = (elapsedMs * 0.001) * config.speed;
+  const palette = getLavaPalette(elapsedMs);
+  const motionTime = t;
 
   for (let i = 0; i < MAX_BLOBS; i += 1) {
     const idx = i * 2;
@@ -477,24 +668,74 @@ function tick(now: number): void {
       centers[idx] = 0;
       centers[idx + 1] = 0;
       radii[i] = 0.0001;
+      offsetXs[i] = 0;
+      offsetYs[i] = 0;
+      velocityXs[i] = 0;
+      velocityYs[i] = 0;
       continue;
     }
 
     const phase = phases[i];
-    const xPrimary = Math.sin(t * xFreqs[i] + phase);
-    const xSecondary = Math.sin(t * (xFreqs[i] * 0.53) + phase * 1.72);
-    const yPrimary = Math.cos(t * yFreqs[i] + phase * 1.37);
-    const ySecondary = Math.sin(t * (yFreqs[i] * 0.46) + phase * 2.11);
-    const buoyancy = Math.sin(t * 0.22 + phase * 0.83);
+    const xPrimary = Math.sin(motionTime * xFreqs[i] + phase);
+    const xSecondary = Math.sin(motionTime * (xFreqs[i] * 0.53) + phase * 1.72);
+    const yPrimary = Math.cos(motionTime * yFreqs[i] + phase * 1.37);
+    const ySecondary = Math.sin(motionTime * (yFreqs[i] * 0.46) + phase * 2.11);
+    const buoyancy = Math.sin(motionTime * 0.22 + phase * 0.83);
 
-    centers[idx] = (xPrimary * 0.7 + xSecondary * 0.35) * 0.85;
-    centers[idx + 1] = (yPrimary * 0.62 + ySecondary * 0.31 + buoyancy * 0.22) * 0.85;
+    const baseX = xPrimary * 0.7 + xSecondary * 0.35;
+    const baseY = yPrimary * 0.62 + ySecondary * 0.31 + buoyancy * 0.22;
+    const targetX = baseX * 0.85;
+    const targetY = baseY * 0.85;
 
-    const pulse = 0.5 + 0.5 * Math.sin(t * radiusFreqs[i] + phase * 0.64);
-    radii[i] = config.blobRadiusMin + (config.blobRadiusMax - config.blobRadiusMin) * pulse;
+    if (pointerState.active) {
+      const dx = targetX + offsetXs[i] - pointerState.x;
+      const dy = targetY + offsetYs[i] - pointerState.y;
+      const distance = Math.max(Math.hypot(dx, dy), 0.0001);
+
+      if (distance < POINTER_INTERACTION.influenceRadius) {
+        const falloff = 1 - distance / POINTER_INTERACTION.influenceRadius;
+        const push = falloff * falloff * POINTER_INTERACTION.pushStrength;
+
+        velocityXs[i] += ((dx / distance) * push + pointerState.vx * POINTER_INTERACTION.pointerDrag * falloff) * deltaSeconds;
+        velocityYs[i] += ((dy / distance) * push + pointerState.vy * POINTER_INTERACTION.pointerDrag * falloff) * deltaSeconds;
+      }
+    }
+
+    velocityXs[i] += (-offsetXs[i] * POINTER_INTERACTION.spring) * deltaSeconds;
+    velocityYs[i] += (-offsetYs[i] * POINTER_INTERACTION.spring) * deltaSeconds;
+
+    const damping = Math.exp(-POINTER_INTERACTION.damping * deltaSeconds);
+    velocityXs[i] *= damping;
+    velocityYs[i] *= damping;
+
+    offsetXs[i] += velocityXs[i] * deltaSeconds;
+    offsetYs[i] += velocityYs[i] * deltaSeconds;
+
+    const offsetLength = Math.hypot(offsetXs[i], offsetYs[i]);
+    if (offsetLength > POINTER_INTERACTION.maxOffset) {
+      const clampFactor = POINTER_INTERACTION.maxOffset / offsetLength;
+      offsetXs[i] *= clampFactor;
+      offsetYs[i] *= clampFactor;
+      velocityXs[i] *= 0.92;
+      velocityYs[i] *= 0.92;
+    }
+
+    centers[idx] = targetX + offsetXs[i];
+    centers[idx + 1] = Math.min(0.94, targetY + offsetYs[i]);
+
+    const pulse = 0.5 + 0.5 * Math.sin(motionTime * radiusFreqs[i] + phase * 0.64);
+    const baseRadius = config.blobRadiusMin + (config.blobRadiusMax - config.blobRadiusMin) * pulse;
+    const interactionStretch = 1 + Math.min(Math.hypot(offsetXs[i], offsetYs[i]) * 1.8, 0.08);
+
+    radii[i] = Math.min(config.blobRadiusMax * 1.45, baseRadius * interactionStretch);
   }
 
+  pointerState.vx *= 0.92;
+  pointerState.vy *= 0.92;
+
   gl.uniform1f(timeLocation, t);
+  gl.uniform3fv(lavaColorALocation, palette.colorA);
+  gl.uniform3fv(lavaColorBLocation, palette.colorB);
   gl.uniform1i(blobCountLocation, Math.min(config.blobCount, MAX_BLOBS));
   gl.uniform2fv(blobCentersLocation, centers);
   gl.uniform1fv(blobRadiiLocation, radii);

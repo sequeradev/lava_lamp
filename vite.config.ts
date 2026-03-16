@@ -1,10 +1,5 @@
-import { defineConfig } from 'vite';
-
-const basePath = process.env.VITE_BASE_PATH?.trim();
-const normalizedBase = basePath
-  ? `/${basePath.replace(/^\/+|\/+$/g, '')}/`
-  : '/';
+import { defineConfig } from "vite";
 
 export default defineConfig({
-  base: normalizedBase,
+  base: "/lava_lamp/",
 });
